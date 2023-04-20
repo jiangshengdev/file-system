@@ -10,22 +10,22 @@ const EFS_MAGIC: u32 = 0x3b800001;
 /// 直接索引节点的最大数量
 const INODE_DIRECT_COUNT: usize = 28;
 
-/// The max length of inode name
+/// 索引节点名称的最大长度
 const NAME_LENGTH_LIMIT: usize = 27;
 
-/// The max number of indirect1 inodes
+/// 一级间接索引节点的最大数量
 const INODE_INDIRECT1_COUNT: usize = BLOCK_SZ / 4;
 
-/// The max number of indirect2 inodes
+/// 二级间接索引节点的最大数量
 const INODE_INDIRECT2_COUNT: usize = INODE_INDIRECT1_COUNT * INODE_INDIRECT1_COUNT;
 
-/// The upper bound of direct inode index
+/// 直接索引节点的上界
 const DIRECT_BOUND: usize = INODE_DIRECT_COUNT;
 
-/// The upper bound of indirect1 inode index
+/// 一级间接索引节点的上界
 const INDIRECT1_BOUND: usize = DIRECT_BOUND + INODE_INDIRECT1_COUNT;
 
-/// The upper bound of indirect2 inode indexs
+/// 二级间接索引节点的上界
 #[allow(unused)]
 const INDIRECT2_BOUND: usize = INDIRECT1_BOUND + INODE_INDIRECT2_COUNT;
 
@@ -79,7 +79,8 @@ impl SuperBlock {
             data_area_blocks,
         }
     }
-    /// Check if a super block is valid using efs magic
+
+    /// 使用魔数检查超级块是否有效
     pub fn is_valid(&self) -> bool {
         self.magic == EFS_MAGIC
     }
@@ -95,10 +96,10 @@ pub enum DiskInodeType {
     Directory,
 }
 
-/// A indirect block
+/// 间接索引块
 type IndirectBlock = [u32; BLOCK_SZ / 4];
 
-/// A data block
+/// 数据块
 type DataBlock = [u8; BLOCK_SZ];
 
 /// 磁盘索引节点
@@ -135,18 +136,34 @@ impl DiskInode {
         self.type_ = type_;
     }
 
-    /// Whether this inode is a directory
+    /// 这个磁盘索引节点是否是一个目录
     pub fn is_dir(&self) -> bool {
         self.type_ == DiskInodeType::Directory
     }
-    /// Return block number correspond to size.
+
+    /// 返回与当前数据大小对应的块数
     pub fn data_blocks(&self) -> u32 {
         Self::_data_blocks(self.size)
     }
+
+    /// 返回需要的块数
+    ///
+    /// # Arguments
+    ///
+    /// * `size`: 字节数
+    ///
+    /// returns: u32 块数
     fn _data_blocks(size: u32) -> u32 {
         (size + BLOCK_SZ as u32 - 1) / BLOCK_SZ as u32
     }
-    /// Return number of blocks needed include indirect1/2.
+
+    /// 返回需要的块数，包括间接索引节点
+    ///
+    /// # Arguments
+    ///
+    /// * `size`: 字节数
+    ///
+    /// returns: u32 块数
     pub fn total_blocks(size: u32) -> u32 {
         let data_blocks = Self::_data_blocks(size) as usize;
         let mut total = data_blocks as usize;
@@ -163,12 +180,27 @@ impl DiskInode {
         }
         total as u32
     }
-    /// Get the number of data blocks that have to be allocated given the new size of data
+
+    /// 获取在新的数据大小下需要分配的数据块数
+    ///
+    /// # Arguments
+    ///
+    /// * `new_size`: 新的数据大小
+    ///
+    /// returns: u32 新增块数
     pub fn blocks_num_needed(&self, new_size: u32) -> u32 {
         assert!(new_size >= self.size);
         Self::total_blocks(new_size) - Self::total_blocks(self.size)
     }
-    /// Get id of block given inner id
+
+    /// 获取给定内部 ID 的块 ID
+    ///
+    /// # Arguments
+    ///
+    /// * `inner_id`: 内部 ID
+    /// * `block_device`: 块设备
+    ///
+    /// returns: u32 块 ID
     pub fn get_block_id(&self, inner_id: u32, block_device: &Arc<dyn BlockDevice>) -> u32 {
         let inner_id = inner_id as usize;
         if inner_id < INODE_DIRECT_COUNT {
@@ -193,7 +225,14 @@ impl DiskInode {
                 })
         }
     }
-    /// Inncrease the size of current disk inode
+
+    /// 扩容当前磁盘索引节点的大小
+    ///
+    /// # Arguments
+    ///
+    /// * `new_size`: 新的大小
+    /// * `new_blocks`: 新分配的块
+    /// * `block_device`: 块设备
     pub fn increase_size(
         &mut self,
         new_size: u32,
@@ -204,12 +243,14 @@ impl DiskInode {
         self.size = new_size;
         let mut total_blocks = self.data_blocks();
         let mut new_blocks = new_blocks.into_iter();
-        // fill direct
+
+        // 填充直接索引节点
         while current_blocks < total_blocks.min(INODE_DIRECT_COUNT as u32) {
             self.direct[current_blocks as usize] = new_blocks.next().unwrap();
             current_blocks += 1;
         }
-        // alloc indirect1
+
+        // 分配一级间接索引节点
         if total_blocks > INODE_DIRECT_COUNT as u32 {
             if current_blocks == INODE_DIRECT_COUNT as u32 {
                 self.indirect1 = new_blocks.next().unwrap();
@@ -219,7 +260,8 @@ impl DiskInode {
         } else {
             return;
         }
-        // fill indirect1
+
+        // 填充一级间接索引节点
         get_block_cache(self.indirect1 as usize, Arc::clone(block_device))
             .lock()
             .modify(0, |indirect1: &mut IndirectBlock| {
@@ -228,7 +270,8 @@ impl DiskInode {
                     current_blocks += 1;
                 }
             });
-        // alloc indirect2
+
+        // 分配二级间接索引节点
         if total_blocks > INODE_INDIRECT1_COUNT as u32 {
             if current_blocks == INODE_INDIRECT1_COUNT as u32 {
                 self.indirect2 = new_blocks.next().unwrap();
@@ -238,12 +281,14 @@ impl DiskInode {
         } else {
             return;
         }
-        // fill indirect2 from (a0, b0) -> (a1, b1)
+
+        // 填充二级间接索引节点从 (a0, b0) -> (a1, b1)
         let mut a0 = current_blocks as usize / INODE_INDIRECT1_COUNT;
         let mut b0 = current_blocks as usize % INODE_INDIRECT1_COUNT;
         let a1 = total_blocks as usize / INODE_INDIRECT1_COUNT;
         let b1 = total_blocks as usize % INODE_INDIRECT1_COUNT;
-        // alloc low-level indirect1
+
+        // 分配低等级的一级间接索引节点
         get_block_cache(self.indirect2 as usize, Arc::clone(block_device))
             .lock()
             .modify(0, |indirect2: &mut IndirectBlock| {
@@ -251,13 +296,15 @@ impl DiskInode {
                     if b0 == 0 {
                         indirect2[a0] = new_blocks.next().unwrap();
                     }
-                    // fill current
+
+                    // 填充当前
                     get_block_cache(indirect2[a0] as usize, Arc::clone(block_device))
                         .lock()
                         .modify(0, |indirect1: &mut IndirectBlock| {
                             indirect1[b0] = new_blocks.next().unwrap();
                         });
-                    // move to next
+
+                    // 移动到下一个
                     b0 += 1;
                     if b0 == INODE_INDIRECT1_COUNT {
                         b0 = 0;
@@ -267,7 +314,15 @@ impl DiskInode {
             });
     }
 
-    /// Read data from current disk inode
+    /// 从当前磁盘索引节点中读取数据
+    ///
+    /// # Arguments
+    ///
+    /// * `offset`: 偏移
+    /// * `buf`: 缓冲区
+    /// * `block_device`: 块设备
+    ///
+    /// returns: usize 读取的字节数
     pub fn read_at(
         &self,
         offset: usize,
@@ -282,10 +337,11 @@ impl DiskInode {
         let mut start_block = start / BLOCK_SZ;
         let mut read_size = 0usize;
         loop {
-            // calculate end of current block
+            // 计算当前块的结尾
             let mut end_current_block = (start / BLOCK_SZ + 1) * BLOCK_SZ;
             end_current_block = end_current_block.min(end);
-            // read and update read size
+
+            // 读取并更新读取大小
             let block_read_size = end_current_block - start;
             let dst = &mut buf[read_size..read_size + block_read_size];
             get_block_cache(
@@ -298,7 +354,8 @@ impl DiskInode {
                 dst.copy_from_slice(src);
             });
             read_size += block_read_size;
-            // move to next block
+
+            // 移动到下一个块
             if end_current_block == end {
                 break;
             }
@@ -307,8 +364,17 @@ impl DiskInode {
         }
         read_size
     }
-    /// Write data into current disk inode
-    /// size must be adjusted properly beforehand
+
+    /// 写入数据到当前磁盘索引节点
+    /// 大小必须在调用前调整
+    ///
+    /// # Arguments
+    ///
+    /// * `offset`: 偏移
+    /// * `buf`: 缓冲区
+    /// * `block_device`: 块设备
+    ///
+    /// returns: usize 写入的字节数
     pub fn write_at(
         &mut self,
         offset: usize,
@@ -321,10 +387,11 @@ impl DiskInode {
         let mut start_block = start / BLOCK_SZ;
         let mut write_size = 0usize;
         loop {
-            // calculate end of current block
+            // 计算当前块的结尾
             let mut end_current_block = (start / BLOCK_SZ + 1) * BLOCK_SZ;
             end_current_block = end_current_block.min(end);
-            // write and update write size
+
+            // 写入并更新写入大小
             let block_write_size = end_current_block - start;
             let cache = get_block_cache(
                 self.get_block_id(start_block as u32, block_device) as usize,
@@ -337,7 +404,8 @@ impl DiskInode {
                 nop();
             });
             write_size += block_write_size;
-            // move to next block
+
+            // 移动到下一个块
             if end_current_block == end {
                 break;
             }
@@ -348,25 +416,33 @@ impl DiskInode {
     }
 }
 
-/// A directory entry
+/// 一个目录条目
 #[repr(C)]
 pub struct DirEntry {
     name: [u8; NAME_LENGTH_LIMIT + 1],
     inode_number: u32,
 }
 
-/// Size of a directory entry
+/// 一个目录条目的大小
 pub const DIRENT_SZ: usize = 32;
 
 impl DirEntry {
-    /// Create an empty directory entry
+    /// 创建一个空的目录条目
     pub fn empty() -> Self {
         Self {
             name: [0u8; NAME_LENGTH_LIMIT + 1],
             inode_number: 0,
         }
     }
-    /// Crate a directory entry from name and inode number
+
+    /// 根据名称和索引节点号创建一个目录条目
+    ///
+    /// # Arguments
+    ///
+    /// * `name`: 文件名
+    /// * `inode_number`: 索引节点号
+    ///
+    /// returns: DirEntry 目录条目
     pub fn new(name: &str, inode_number: u32) -> Self {
         let mut bytes = [0u8; NAME_LENGTH_LIMIT + 1];
         bytes[..name.len()].copy_from_slice(name.as_bytes());
@@ -375,20 +451,24 @@ impl DirEntry {
             inode_number,
         }
     }
-    /// Serialize into bytes
+
+    /// 序列化为不可变字节
     pub fn as_bytes(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self as *const _ as usize as *const u8, DIRENT_SZ) }
     }
-    /// Serialize into mutable bytes
+
+    /// 序列化为可变字节
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self as *mut _ as usize as *mut u8, DIRENT_SZ) }
     }
-    /// Get name of the entry
+
+    /// 获取条目的名称
     pub fn name(&self) -> &str {
         let len = (0usize..).find(|i| self.name[*i] == 0).unwrap();
         core::str::from_utf8(&self.name[..len]).unwrap()
     }
-    /// Get inode number of the entry
+
+    /// 获取条目的索引节点号
     pub fn inode_number(&self) -> u32 {
         self.inode_number
     }
