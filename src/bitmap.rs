@@ -10,6 +10,13 @@ type BitmapBlock = [u64; 64];
 /// 一个块中的比特数
 const BLOCK_BITS: usize = BLOCK_SZ * 8;
 
+/// Decompose bits into (block_pos, bits64_pos, inner_pos)
+fn decomposition(mut bit: usize) -> (usize, usize, usize) {
+    let block_pos = bit / BLOCK_BITS;
+    bit %= BLOCK_BITS;
+    (block_pos, bit / 64, bit % 64)
+}
+
 #[derive(Debug)]
 /// 位图
 pub struct Bitmap {
@@ -74,6 +81,17 @@ impl Bitmap {
             }
         }
         None
+    }
+
+    /// Deallocate a block
+    pub fn dealloc(&self, block_device: &Arc<dyn BlockDevice>, bit: usize) {
+        let (block_pos, bits64_pos, inner_pos) = decomposition(bit);
+        get_block_cache(block_pos + self.start_block_id, Arc::clone(block_device))
+            .lock()
+            .modify(0, |bitmap_block: &mut BitmapBlock| {
+                assert!(bitmap_block[bits64_pos] & (1u64 << inner_pos) > 0);
+                bitmap_block[bits64_pos] -= 1u64 << inner_pos;
+            });
     }
 
     /// 获取可分配块的最大数量

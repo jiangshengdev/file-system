@@ -101,6 +101,22 @@ impl Inode {
         None
     }
 
+    /// 在当前索引节点下按名称查找索引节点
+    pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
+        let fs = self.fs.lock();
+        self.read_disk_inode(|disk_inode| {
+            self.find_inode_id(name, disk_inode).map(|inode_id| {
+                let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+                Arc::new(Self::new(
+                    block_id,
+                    block_offset,
+                    self.fs.clone(),
+                    self.block_device.clone(),
+                ))
+            })
+        })
+    }
+
     /// 扩容磁盘索引节点
     ///
     /// # Arguments
@@ -134,7 +150,6 @@ impl Inode {
     /// returns: Option<Arc<Inode>> 索引节点
     pub fn create(&self, name: &str) -> Option<Arc<Inode>> {
         let mut fs = self.fs.lock();
-
         let op = |root_inode: &DiskInode| {
             // 断言根索引节点是一个目录
             assert!(root_inode.is_dir());
@@ -176,7 +191,6 @@ impl Inode {
         });
 
         let (block_id, block_offset) = fs.get_disk_inode_pos(new_inode_id);
-
         block_cache_sync_all();
 
         // 返回索引节点
@@ -188,5 +202,68 @@ impl Inode {
         )))
 
         // 由编译器自动释放简易文件系统锁
+    }
+
+    /// 列出当前索引节点下的索引节点
+    pub fn ls(&self) -> Vec<String> {
+        let _fs = self.fs.lock();
+        self.read_disk_inode(|disk_inode| {
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+            let mut v: Vec<String> = Vec::new();
+            for i in 0..file_count {
+                let mut dirent = DirEntry::empty();
+                assert_eq!(
+                    disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                v.push(String::from(dirent.name()));
+            }
+            v
+        })
+    }
+
+    /// 从当前索引节点中读取数据
+    ///
+    /// # Arguments
+    ///
+    /// * `offset`: 偏移
+    /// * `buf`: 缓冲区
+    ///
+    /// returns: usize 读取的字节数
+    pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
+        let _fs = self.fs.lock();
+        self.read_disk_inode(|disk_inode| disk_inode.read_at(offset, buf, &self.block_device))
+    }
+
+    /// 将数据写入到当前索引节点
+    ///
+    /// # Arguments
+    ///
+    /// * `offset`: 偏移
+    /// * `buf`: 缓冲区
+    ///
+    /// returns: usize 写入的字节数
+    pub fn write_at(&self, offset: usize, buf: &[u8]) -> usize {
+        let mut fs = self.fs.lock();
+        let size = self.modify_disk_inode(|disk_inode| {
+            self.increase_size((offset + buf.len()) as u32, disk_inode, &mut fs);
+            disk_inode.write_at(offset, buf, &self.block_device)
+        });
+        block_cache_sync_all();
+        size
+    }
+
+    /// 清空当前索引节点中的数据
+    pub fn clear(&self) {
+        let mut fs = self.fs.lock();
+        self.modify_disk_inode(|disk_inode| {
+            let size = disk_inode.size;
+            let data_blocks_dealloc = disk_inode.clear_size(&self.block_device);
+            assert!(data_blocks_dealloc.len() == DiskInode::total_blocks(size) as usize);
+            for data_block in data_blocks_dealloc.into_iter() {
+                fs.dealloc_data(data_block);
+            }
+        });
+        block_cache_sync_all();
     }
 }
