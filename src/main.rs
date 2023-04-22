@@ -65,7 +65,7 @@ fn efs_test() -> std::io::Result<()> {
         filea.clear();
         assert_eq!(filea.read_at(0, &mut buffer), 0,);
         let mut str = String::new();
-        // random digit
+        // 随机数字
         for _ in 0..len {
             str.push(char::from('0' as u8 + rand::random::<u8>() % 10));
         }

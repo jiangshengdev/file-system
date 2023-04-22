@@ -10,7 +10,13 @@ type BitmapBlock = [u64; 64];
 /// 一个块中的比特数
 const BLOCK_BITS: usize = BLOCK_SZ * 8;
 
-/// Decompose bits into (block_pos, bits64_pos, inner_pos)
+/// 将块ID分解
+///
+/// # Arguments
+///
+/// * `bit`: 块ID
+///
+/// returns: (usize, usize, usize) (块位置, 块内位置, 比特位置)
 fn decomposition(mut bit: usize) -> (usize, usize, usize) {
     let block_pos = bit / BLOCK_BITS;
     bit %= BLOCK_BITS;
@@ -83,15 +89,19 @@ impl Bitmap {
         None
     }
 
-    /// Deallocate a block
+    /// 释放一个块
+    ///
+    /// # Arguments
+    ///
+    /// * `block_device`: 块设备
+    /// * `bit`: 块ID
     pub fn dealloc(&self, block_device: &Arc<dyn BlockDevice>, bit: usize) {
         let (block_pos, bits64_pos, inner_pos) = decomposition(bit);
-        get_block_cache(block_pos + self.start_block_id, Arc::clone(block_device))
-            .lock()
-            .modify(0, |bitmap_block: &mut BitmapBlock| {
-                assert!(bitmap_block[bits64_pos] & (1u64 << inner_pos) > 0);
-                bitmap_block[bits64_pos] -= 1u64 << inner_pos;
-            });
+        let cache = get_block_cache(block_pos + self.start_block_id, block_device.clone());
+        cache.lock().modify(0, |bitmap_block: &mut BitmapBlock| {
+            assert!(bitmap_block[bits64_pos] & (1u64 << inner_pos) > 0);
+            bitmap_block[bits64_pos] -= 1u64 << inner_pos;
+        });
     }
 
     /// 获取可分配块的最大数量

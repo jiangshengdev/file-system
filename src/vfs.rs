@@ -102,6 +102,12 @@ impl Inode {
     }
 
     /// 在当前索引节点下按名称查找索引节点
+    ///
+    /// # Arguments
+    ///
+    /// * `name`: 文件名
+    ///
+    /// returns: Option<Arc<Inode>> 索引节点
     pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
         let fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| {
